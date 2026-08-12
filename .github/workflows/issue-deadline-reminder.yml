@@ -1,0 +1,37 @@
+name: Issue deadline reminders
+
+on:
+  issues:
+    types: [assigned, opened, milestoned]
+  schedule:
+    - cron: '15 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = context.eventName === 'issues'
+              ? [context.payload.issue]
+              : await github.paginate(github.rest.issues.listForRepo, { ...context.repo, state: 'open', per_page: 100 });
+            const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+            for (const issue of issues) {
+              if (issue.pull_request || !issue.milestone?.due_on || issue.assignees.length === 0) continue;
+              const due = new Date(issue.milestone.due_on); due.setUTCHours(0, 0, 0, 0);
+              const days = Math.ceil((due - today) / 86400000);
+              const shouldPost = context.eventName === 'issues' || [7, 3, 1, 0].includes(days) || days < 0;
+              if (!shouldPost) continue;
+              const marker = `<!-- velt-deadline:${due.toISOString().slice(0,10)}:${days} -->`;
+              const comments = await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number: issue.number, per_page: 100 });
+              if (comments.some(comment => comment.body?.includes(marker))) continue;
+              const people = issue.assignees.map(person => `@${person.login}`).join(' ');
+              const status = days < 0 ? `en retard de ${Math.abs(days)} jour(s)` : days === 0 ? "à livrer aujourd'hui" : `à livrer dans ${days} jour(s)`;
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `${marker}\n${people} — **${issue.milestone.title}** est ${status} (${due.toISOString().slice(0,10)}). Merci de publier un point d’avancement, les tests exécutés et les blocages éventuels.` });
+            }
