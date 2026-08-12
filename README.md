@@ -1,59 +1,211 @@
-# Sous-module 01 - Kernel Contracts
+# Velt Kernel
 
-## Mission
+`velt/kernel` is the runtime-independent foundation of the Velt framework. It owns application bootstrapping, dependency resolution, configuration, environment values, service providers, events, exception handling and lifecycle contracts shared by HTTP, CLI, workers and the future embedded Android runtime.
 
-Ce sous-module definit le coeur minimal de Velt. Il contient les contrats, les conventions, les exceptions communes, le container de services minimal et les helpers dont les autres composants auront besoin.
+> Status: alpha. Public contracts are actively being stabilized before Velt 1.0.
 
-Il doit rester petit. Son role n'est pas de devenir un framework complet, mais de fournir un langage commun aux autres modules.
+## Installation
 
-Apres audit, le kernel doit aussi cadrer les fondations invisibles du framework : cycle de vie application, service providers, events synchrones internes, environnement, exception handling et evolution du container. Ces elements ne sont pas des features avancees ; ce sont les rails qui permettront aux modules HTTP, UI, Database, CLI et Preview de s'enregistrer proprement sans couplage.
+```bash
+composer require velt/kernel:^0.1
+```
 
-## Perimetre
+Requirements: PHP 8.2 or newer. The kernel has no mandatory HTTP, database, UI or mobile dependency.
 
-Inclus :
+## Core responsibilities
 
-- structure de package `velt/kernel` ;
-- contrats de base ;
-- container minimal avec trajectoire PSR-11 ;
-- gestion simple de configuration ;
-- loader `.env` minimal ;
-- modes `local`, `testing`, `production` ;
-- exceptions communes ;
-- bootstrap d'application ;
-- lifecycle `register`, `boot`, `handle`, `terminate` ;
-- service providers minimaux ;
-- event dispatcher synchrone minimal ;
-- exception handler centralise ;
-- helpers strictement necessaires.
+- Build and own the application container.
+- Load configuration and environment repositories.
+- Register service providers before booting them in deterministic order.
+- Dispatch framework and application events.
+- Expose environment helpers such as local, testing and production checks.
+- Centralize exception reporting/rendering contracts.
+- Model bootstrap, handle and terminate phases for multiple runtimes.
+- Supply portable contracts for HTTP, CLI, database and platform adapters.
 
-Exclus :
+## Create an application
 
-- routing HTTP ;
-- rendu UI ;
-- acces database ;
-- generation CLI avancee ;
-- preview mobile.
+```php
+<?php
 
-## Comment tester sans les autres modules
+use Velt\Kernel\Application;
 
-Le kernel core doit rester testable sans autres packages Velt. Les tests du noyau doivent donc utiliser uniquement PHP, PHPUnit et des classes factices locales.
+$app = new Application(
+    basePath: dirname(__DIR__),
+    config: [
+        'app' => [
+            'name' => 'Example',
+            'env' => 'local',
+            'debug' => true,
+        ],
+    ],
+);
 
-- Pour tester le container, creer de petites classes fake dans `tests/Fixtures`.
-- Pour tester les providers, creer un `FakeServiceProvider` qui enregistre une valeur simple dans le container.
-- Pour tester les events, creer un evenement `FakeBootedEvent` et un listener qui ajoute une entree dans un tableau.
-- Pour tester l'exception handler, utiliser une exception generique et verifier qu'elle devient un objet d'erreur abstrait ou une structure compatible response, sans dependre de `veltphp/http`.
-- Pour tester `.env`, utiliser un dossier temporaire avec un fichier `.env.testing` ou `.env` minimal.
+$app->bootstrap();
+$app->boot();
+```
 
-Le kernel est termine seulement s'il peut prouver qu'il ne depend d'aucune classe `Velt\Http`, `Velt\Database`, `Velt\Cli` ou `Velt\Preview`, et que les integrations optionnelles comme `velt/ui` restent autonomes, sans dependance circulaire.
+`bootstrap()` prepares the runtime and registered foundation. `boot()` executes provider boot hooks after every service has had an opportunity to register. Calling lifecycle operations repeatedly is guarded by application state.
 
-## Issues
+## Dependency container
 
-- [Issue 01 - Initialiser le package Kernel](issues/01-initialiser-package-kernel.md)
-- [Issue 02 - Creer les contrats fondamentaux](issues/02-creer-contrats-fondamentaux.md)
-- [Issue 03 - Implementer le container minimal](issues/03-implementer-container-minimal.md)
-- [Issue 04 - Ajouter configuration et bootstrap application](issues/04-ajouter-configuration-bootstrap-application.md)
-- [Issue 05 - Ajouter service providers et lifecycle application](issues/05-service-providers-lifecycle-application.md)
-- [Issue 06 - Ajouter EventDispatcher synchrone minimal](issues/06-event-dispatcher-synchrone-minimal.md)
-- [Issue 07 - Ajouter Env loader et modes application](issues/07-env-loader-modes-application.md)
-- [Issue 08 - Ajouter ExceptionHandler centralise](issues/08-exception-handler-centralise.md)
-- [Issue 09 - Renforcer container avec autowiring prudent et compatibilite PSR-11](issues/09-container-autowiring-prudent-psr11.md)
+The container supports bindings, singletons, existing instances, aliases and constructor autowiring.
+
+```php
+interface Clock
+{
+    public function now(): DateTimeImmutable;
+}
+
+final class SystemClock implements Clock
+{
+    public function now(): DateTimeImmutable
+    {
+        return new DateTimeImmutable();
+    }
+}
+
+$container = $app->container();
+$container->singleton(Clock::class, SystemClock::class);
+
+$clock = $container->get(Clock::class);
+```
+
+Use `instance()` for an object created outside the container and `alias()` when two identifiers should resolve the same binding. Resolution errors are reported as kernel exceptions rather than silently returning null.
+
+## Service providers
+
+Providers package a module's registrations and boot work:
+
+```php
+<?php
+
+use Velt\Kernel\ServiceProvider;
+
+final class BillingServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->container()->singleton(
+            BillingGateway::class,
+            StripeBillingGateway::class,
+        );
+    }
+
+    public function boot(): void
+    {
+        // Bind listeners or validate configuration after registration.
+    }
+}
+
+$app->registerProvider(BillingServiceProvider::class);
+$app->boot();
+```
+
+Registration should be side-effect-light. Network access, migrations and work tied to a specific request do not belong in `register()`.
+
+## Configuration and environment
+
+The config repository uses dot notation:
+
+```php
+$app->config()->get('app.name', 'Velt');
+$app->config()->set('features.billing', true);
+$app->config()->has('database.default');
+$all = $app->config()->all();
+```
+
+The environment repository loads `.env`-style values and provides typed application environment helpers:
+
+```php
+$app->env()->load($app->basePath() . '/.env');
+$debug = $app->env()->get('APP_DEBUG', false);
+
+if ($app->isProduction()) {
+    // Disable verbose errors.
+}
+```
+
+Secrets should remain outside version control and must not be copied into logs or mobile artifacts.
+
+## Events
+
+```php
+$app->events()->listen(OrderPaid::class, static function (OrderPaid $event): void {
+    // React to the domain event.
+});
+
+$app->events()->dispatch(new OrderPaid($orderId));
+```
+
+Listeners execute through the event dispatcher contract so runtimes and tests can replace the implementation when required.
+
+## Runtime lifecycle
+
+The kernel models a portable sequence:
+
+```text
+construct → bootstrap → boot → handle input → terminate
+```
+
+`RuntimeInterface` exposes container, events, bootstrap, handle and termination. Specialized marker contracts distinguish HTTP, CLI and platform runtimes. Worker lifecycle contracts prepare long-running processes where request state must be reset between interactions.
+
+For Android, the target lifecycle adds pause/resume/reset semantics without placing Android classes inside this package. The actual implementation belongs in `velt/native`, while this kernel remains portable.
+
+## Exception handling
+
+`ExceptionHandlerInterface` separates reporting from rendering. Development environments may produce detailed diagnostics; production renderers must avoid stack traces, paths and secret values.
+
+```php
+try {
+    $result = $app->handle($input);
+} catch (Throwable $exception) {
+    $result = $app->exceptions()->handle($exception, $input);
+}
+```
+
+## Public contracts
+
+Important extension points include:
+
+- `ApplicationInterface`
+- `ContainerInterface`
+- `ConfigRepositoryInterface`
+- `EnvRepositoryInterface`
+- `EventDispatcherInterface`
+- `ExceptionHandlerInterface`
+- `ServiceProviderInterface`
+- `RuntimeInterface`, `HttpRuntimeInterface`, `CliRuntimeInterface`
+- `PlatformInterface`, `MobilePlatformInterface`, `DesktopPlatformInterface`
+- `DatabaseManagerInterface`, `ConnectionInterface`, `DriverInterface`
+- `ArrayableInterface`, `JsonableInterface`, `RenderableInterface`
+
+Applications should depend on contracts where substitution matters and avoid reaching into package internals.
+
+## Testing and quality
+
+```bash
+composer install
+composer test
+composer analyse
+composer cs:check
+composer rector:dry-run
+```
+
+Tests cover container resolution, lifecycle state, providers, configuration, environment values, events, exception handling and the portable contracts.
+
+## Security and performance
+
+- Do not autowire untrusted class names.
+- Avoid retaining request, Activity or user state in process-wide singletons.
+- Keep provider boot deterministic and observable.
+- Redact exception context before reporting in production.
+- Long-running runtimes must reset scoped state and terminate resources cleanly.
+
+## Versioning and contribution
+
+Kernel changes affect every Velt package. Public contract changes require tests, an upgrade note and integration evidence. New runtime-specific behavior should live behind a portable contract and be implemented in the owning adapter repository.
+
+## License
+
+MIT
