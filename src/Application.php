@@ -9,14 +9,24 @@ use RuntimeException;
 use Throwable;
 use Velt\Kernel\Config\ConfigRepository;
 use Velt\Kernel\Contracts\ApplicationInterface;
+use Velt\Kernel\Contracts\ApplicationScopeInterface;
 use Velt\Kernel\Contracts\ConfigRepositoryInterface;
 use Velt\Kernel\Contracts\ContainerInterface;
 use Velt\Kernel\Contracts\EnvRepositoryInterface;
 use Velt\Kernel\Contracts\EventDispatcherInterface;
 use Velt\Kernel\Contracts\ExceptionHandlerInterface;
+use Velt\Kernel\Contracts\PreviewSessionScopeInterface;
+use Velt\Kernel\Contracts\RuntimeLifecycleEventsInterface;
+use Velt\Kernel\Contracts\RequestScopeInterface;
+use Velt\Kernel\Contracts\RuntimeStateInterface;
 use Velt\Kernel\Contracts\ServiceProviderInterface;
 use Velt\Kernel\Env\EnvRepository;
 use Velt\Kernel\Exceptions\DefaultExceptionHandler;
+use Velt\Kernel\Runtime\RuntimeState;
+use Velt\Kernel\Runtime\RuntimeFailure;
+use Velt\Kernel\Scope\ApplicationScope;
+use Velt\Kernel\Scope\RequestScope;
+use Velt\Kernel\Scope\PreviewSessionScope;
 
 final class Application implements ApplicationInterface
 {
@@ -46,21 +56,36 @@ final class Application implements ApplicationInterface
 
     private bool $booted = false;
 
-    private bool $bootstrapped = false;
+    private RuntimeStateInterface $runtimeState;
 
-    private bool $terminated = false;
+    private ApplicationScopeInterface $applicationScope;
+
+    private ?RequestScopeInterface $requestScope = null;
+
+    private PreviewSessionScopeInterface $previewSession;
+
+    private bool $rebuildRequested = false;
+
+    private bool $scopesClosed = false;
 
     /**
      * @param array<string, mixed> $config
      */
     public function __construct(
         string $basePath,
-        array $config = []
+        array $config = [],
+        ?RuntimeStateInterface $runtimeState = null,
+        ?ApplicationScopeInterface $applicationScope = null,
+        ?PreviewSessionScopeInterface $previewSession = null
     ) {
         $this->basePath = rtrim(
             $basePath,
             DIRECTORY_SEPARATOR
         );
+
+        $this->runtimeState = $runtimeState ?? new RuntimeState();
+        $this->applicationScope = $applicationScope ?? new ApplicationScope();
+        $this->previewSession = $previewSession ?? new PreviewSessionScope();
 
         $this->container = new Container();
 
@@ -227,14 +252,38 @@ final class Application implements ApplicationInterface
         return $this->booted;
     }
 
+    /**
+     * Indique si l'application est prête à accepter des interactions.
+     */
+    public function isReady(): bool
+    {
+        return $this->runtimeState->isReady();
+    }
+
+    /**
+     * Indique si l'application est actuellement en pause.
+     */
+    public function isPaused(): bool
+    {
+        return $this->runtimeState->isPaused();
+    }
+
+    /**
+     * Indique si l'instance de l'application a été définitivement arrêtée.
+     */
+    public function isShutdown(): bool
+    {
+        return $this->runtimeState->isShutdown();
+    }
+
     public function isBootstrapped(): bool
     {
-        return $this->bootstrapped;
+        return $this->runtimeState->isBootstrapped();
     }
 
     public function isTerminated(): bool
     {
-        return $this->terminated;
+        return $this->runtimeState->isTerminated();
     }
 
     /**
@@ -242,25 +291,185 @@ final class Application implements ApplicationInterface
      */
     public function bootstrap(): void
     {
-        if ($this->bootstrapped) {
+        if ($this->runtimeState->isBootstrapped()) {
             return;
         }
 
-        $this->events->dispatch(
-            'application.bootstrapping'
-        );
+        $this->events->dispatch(RuntimeLifecycleEventsInterface::BOOTSTRAPPING);
 
         $this->boot();
-
-        $this->bootstrapped = true;
+        $this->ready();
+        $this->runtimeState->markBootstrapped();
 
         $this->events->dispatch(
-            'application.bootstrapped'
+            RuntimeLifecycleEventsInterface::BOOTSTRAPPED
         );
+    }
+
+    public function requestScope(): RequestScopeInterface
+    {
+        if ($this->requestScope === null) {
+            throw new RuntimeException(
+                'No active request scope.'
+            );
+        }
+
+        return $this->requestScope;
+    }
+
+    public function ready(): void
+    {
+        if (! $this->booted) {
+            throw new RuntimeException(
+                'Cannot mark application as ready before boot.'
+            );
+        }
+
+        if ($this->runtimeState->isReady()) {
+            return;
+        }
+
+        $this->runtimeState->markReady();
+
+        $this->events->dispatch(RuntimeLifecycleEventsInterface::READY);
+    }
+
+    /**
+     * Met l'application en pause sans détruire son instance.
+     *
+     * @throws RuntimeException Si l'application n'est pas prête.
+     */
+    public function pause(): void
+    {
+        if (! $this->runtimeState->isReady()) {
+            throw new RuntimeException(
+                'Cannot pause application before it is ready.'
+            );
+        }
+
+        if ($this->runtimeState->isShutdown()) {
+            throw new RuntimeException(
+                'Cannot pause a shut down application.'
+            );
+        }
+
+        if ($this->runtimeState->isPaused()) {
+            throw new RuntimeException(
+                'Application is already paused.'
+            );
+        }
+
+        $this->runtimeState->pause();
+
+        $this->events->dispatch(
+            RuntimeLifecycleEventsInterface::PAUSED
+        );
+    }
+
+    /**
+     * Reprend l'application après une mise en pause.
+     *
+     * @throws RuntimeException Si l'application n'est pas en pause.
+     */
+    public function resume(): void
+    {
+        if ($this->runtimeState->isShutdown()) {
+            throw new RuntimeException(
+                'Cannot resume a shut down application.'
+            );
+        }
+
+        if (! $this->runtimeState->isPaused()) {
+            throw new RuntimeException(
+                'Cannot resume an application that is not paused.'
+            );
+        }
+
+        $this->runtimeState->resume();
+
+        $this->events->dispatch(
+            RuntimeLifecycleEventsInterface::RESUMED
+        );
+    }
+
+    /**
+     * Réinitialise l'état temporaire du runtime.
+     *
+     * Les services applicatifs persistants et le conteneur
+     * sont conservés.
+     *
+     * @throws RuntimeException Si l'application n'est pas dans
+     *                          un état permettant sa réinitialisation.
+     */
+    public function reset(): void
+    {
+        if ($this->runtimeState->isShutdown()) {
+            throw new RuntimeException(
+                'Cannot reset a shut down application.'
+            );
+        }
+
+        if (! $this->runtimeState->isReady()) {
+            throw new RuntimeException(
+                'Cannot reset an application that is not ready.'
+            );
+        }
+
+        $this->runtimeState->reset();
+
+        $this->events->dispatch(
+            RuntimeLifecycleEventsInterface::RESET
+        );
+    }
+
+    /**
+     * Arrête définitivement l'instance courante de l'application.
+     *
+     * Après cette opération, l'instance ne peut plus être reprise.
+     * Une nouvelle instance doit être créée pour démarrer un nouveau
+     * cycle de vie.
+     */
+    public function shutdown(): void
+    {
+        $alreadyShutdown = $this->runtimeState->isShutdown();
+
+        if ($alreadyShutdown && $this->scopesClosed) {
+            return;
+        }
+
+        if (! $alreadyShutdown) {
+            $this->events->dispatch(
+                RuntimeLifecycleEventsInterface::SHUTTING_DOWN
+            );
+
+            $this->runtimeState->shutdown();
+        }
+
+        try {
+            if ($this->requestScope !== null) {
+                $this->requestScope->clear();
+                $this->requestScope = null;
+            }
+
+            $this->previewSession->destroy();
+            $this->scopesClosed = true;
+        } finally {
+            if (! $alreadyShutdown) {
+                $this->events->dispatch(
+                    RuntimeLifecycleEventsInterface::SHUTDOWN
+                );
+            }
+        }
     }
 
     public function boot(): void
     {
+        if ($this->runtimeState->isShutdown()) {
+            throw new RuntimeException(
+                'Cannot boot a shut down application.'
+            );
+        }
+
         if ($this->booted) {
             return;
         }
@@ -271,9 +480,7 @@ final class Application implements ApplicationInterface
 
         $this->booted = true;
 
-        $this->events->dispatch(
-            'application.booted'
-        );
+        $this->events->dispatch(RuntimeLifecycleEventsInterface::BOOTED);
     }
 
     /**
@@ -282,21 +489,50 @@ final class Application implements ApplicationInterface
     public function handle(
         mixed $input = null
     ): mixed {
+        if ($this->runtimeState->isShutdown()) {
+            throw new RuntimeException(
+                'Cannot handle a shut down application.'
+            );
+        }
+
+        if ($this->runtimeState->isPaused()) {
+            throw new RuntimeException(
+                'Cannot handle a paused application.'
+            );
+        }
+
+        if ($this->runtimeState->isTerminated()) {
+            throw new RuntimeException(
+                'Cannot handle a terminated application.'
+            );
+        }
+
         $this->bootstrap();
 
-        $this->events->dispatch(
-            'application.handling',
-            $input
-        );
+        $requestScope = new RequestScope();
+        $this->requestScope = $requestScope;
 
-        $output = $input;
+        try {
+            $this->events->dispatch(
+                'application.handling',
+                $input
+            );
 
-        $this->events->dispatch(
-            'application.handled',
-            $output
-        );
+            $output = $input;
 
-        return $output;
+            $this->events->dispatch(
+                'application.handled',
+                $output
+            );
+
+            return $output;
+        } finally {
+            $requestScope->clear();
+
+            if ($this->requestScope === $requestScope) {
+                $this->requestScope = null;
+            }
+        }
     }
 
     /**
@@ -306,7 +542,7 @@ final class Application implements ApplicationInterface
         mixed $input = null,
         mixed $output = null
     ): void {
-        if ($this->terminated) {
+        if ($this->runtimeState->isTerminated()) {
             return;
         }
 
@@ -318,7 +554,7 @@ final class Application implements ApplicationInterface
             ]
         );
 
-        $this->terminated = true;
+        $this->runtimeState->markTerminated();
 
         $this->events->dispatch(
             'application.terminated',
@@ -384,6 +620,55 @@ final class Application implements ApplicationInterface
         $this->container->instance(
             ExceptionHandlerInterface::class,
             $this->exceptions
+        );
+
+        $this->container->instance(
+            RuntimeStateInterface::class,
+            $this->runtimeState
+        );
+
+        $this->container->instance(
+            ApplicationScopeInterface::class,
+            $this->applicationScope
+        );
+
+        $this->container->instance(
+            PreviewSessionScopeInterface::class,
+            $this->previewSession
+        );
+    }
+
+    public function fail(Throwable $exception, string $phase = 'runtime'): void
+    {
+        if ($this->rebuildRequested) {
+            return;
+        }
+
+        $cleanupException = null;
+
+        try {
+            $this->shutdown();
+        } catch (Throwable $exceptionDuringCleanup) {
+            $cleanupException = $exceptionDuringCleanup;
+        }
+
+        $this->rebuildRequested = true;
+
+        $failure = new RuntimeFailure(
+            $exception,
+            $phase,
+            $cleanupException === null,
+            $cleanupException
+        );
+
+        $this->events->dispatch(
+            RuntimeLifecycleEventsInterface::RUNTIME_FAILED,
+            $failure
+        );
+
+        $this->events->dispatch(
+            RuntimeLifecycleEventsInterface::REBUILD_REQUESTED,
+            $failure
         );
     }
 

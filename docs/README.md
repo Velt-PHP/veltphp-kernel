@@ -93,6 +93,16 @@ Chargement des variables d’environnement (`.env`) et gestion des modes :
 
 ## 8. Contracts fondamentaux
 
+### Contrats runtime et scopes
+
+Le cycle de vie portable est défini par `RuntimeInterface`: `boot()`, `ready()`, `bootstrap()`, `handle()`, `pause()`, `resume()`, `reset()`, `terminate()`, `shutdown()` et `fail()`. Les événements associés sont centralisés dans `RuntimeLifecycleEventsInterface`.
+
+Les services applicatifs persistants utilisent `ApplicationScopeInterface`. `RequestScopeInterface` est limité à une interaction et `PreviewSessionScopeInterface` peut survivre à plusieurs interactions jusqu'à l'appel explicite de `destroy()`.
+
+Les contrats `ExecutionQueueInterface`, `ExecutionTaskInterface` et `CancellationTokenInterface` ne définissent aucun thread ni mécanisme Android. Les runtimes CLI, web et Android fournissent leurs implémentations concrètes.
+
+Les contrats `CacheInterface`, `MigrationInterface`, `MigrationRunnerInterface` et `KernelExtensionEventsInterface` restent également indépendants de la plateforme.
+
 Le Kernel définit un ensemble de contrats publics qui servent de langage commun entre tous les modules du framework Velt.
 
 Ces contrats ne contiennent aucune logique métier : ils définissent uniquement les règles de communication.
@@ -880,4 +890,4 @@ Le Kernel est considéré comme valide si :
  - le Kernel fonctionne en isolation totale
 ```
 
-SEM - KASANGA - KISAMU / Lundi 18 Mai 2026 / 17h15
+SEM KASANGA KISAMU / Lundi 18 Mai 2026 / 17h15

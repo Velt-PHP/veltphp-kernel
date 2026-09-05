@@ -10,6 +10,8 @@ use Velt\Kernel\Contracts\ContainerInterface;
 use Velt\Kernel\Contracts\EnvRepositoryInterface;
 use Velt\Kernel\Contracts\EventDispatcherInterface;
 use Velt\Kernel\Contracts\ExceptionHandlerInterface;
+use Velt\Kernel\Contracts\RequestScopeInterface;
+use Throwable;
 use Velt\Kernel\Contracts\ServiceProviderInterface;
 
 final class FakeApplication implements ApplicationInterface
@@ -18,6 +20,21 @@ final class FakeApplication implements ApplicationInterface
      * @var array<class-string, ServiceProviderInterface>
      */
     private array $providers = [];
+
+    /**
+     * État de préparation du runtime.
+     */
+    private bool $ready = false;
+
+    /**
+     * État de pause du runtime.
+     */
+    private bool $paused = false;
+
+    /**
+     * Indique si le runtime est définitivement arrêté.
+     */
+    private bool $shutdown = false;
 
     public function __construct(
         private readonly ContainerInterface $container,
@@ -50,6 +67,11 @@ final class FakeApplication implements ApplicationInterface
     public function events(): EventDispatcherInterface
     {
         return $this->events;
+    }
+
+    public function requestScope(): RequestScopeInterface
+    {
+        throw new \RuntimeException('No active request scope.');
     }
 
     public function env(): EnvRepositoryInterface
@@ -128,6 +150,8 @@ final class FakeApplication implements ApplicationInterface
 
     public function boot(): void {}
 
+    public function ready(): void {}
+
     public function handle(
         mixed $input = null
     ): mixed {
@@ -138,6 +162,30 @@ final class FakeApplication implements ApplicationInterface
         mixed $input = null,
         mixed $output = null
     ): void {}
+
+    public function fail(Throwable $exception, string $phase = 'runtime'): void {}
+
+    public function pause(): void
+    {
+        $this->paused = true;
+    }
+
+    public function resume(): void
+    {
+        $this->paused = false;
+    }
+
+    public function reset(): void
+    {
+        $this->paused = false;
+    }
+
+    public function shutdown(): void
+    {
+        $this->ready = false;
+        $this->paused = false;
+        $this->shutdown = true;
+    }
 
     public function isBooted(): bool
     {
@@ -152,5 +200,20 @@ final class FakeApplication implements ApplicationInterface
     public function isTerminated(): bool
     {
         return false;
+    }
+
+    public function isReady(): bool
+    {
+        return $this->ready;
+    }
+
+    public function isPaused(): bool
+    {
+        return $this->paused;
+    }
+
+    public function isShutdown(): bool
+    {
+        return $this->shutdown;
     }
 }

@@ -148,7 +148,7 @@ The kernel models a portable sequence:
 construct → bootstrap → boot → handle input → terminate
 ```
 
-`RuntimeInterface` exposes container, events, bootstrap, handle and termination. Specialized marker contracts distinguish HTTP, CLI and platform runtimes. Worker lifecycle contracts prepare long-running processes where request state must be reset between interactions.
+`RuntimeInterface` exposes container, events, boot, ready, bootstrap, handle, termination and fatal recovery. Specialized marker contracts distinguish HTTP, CLI and platform runtimes. Worker lifecycle contracts prepare long-running processes where request state must be reset between interactions.
 
 For Android, the target lifecycle adds pause/resume/reset semantics without placing Android classes inside this package. The actual implementation belongs in `velt/native`, while this kernel remains portable.
 
@@ -174,6 +174,10 @@ Important extension points include:
 - `EnvRepositoryInterface`
 - `EventDispatcherInterface`
 - `ExceptionHandlerInterface`
+- `RuntimeStateInterface`, `RuntimeLifecycleEventsInterface`
+- `ApplicationScopeInterface`, `RequestScopeInterface`, `PreviewSessionScopeInterface`
+- `ExecutionQueueInterface`, `ExecutionTaskInterface`, `CancellationTokenInterface`
+- `RuntimeFailureInterface`, `MigrationInterface`, `MigrationRunnerInterface`, `CacheInterface`
 - `ServiceProviderInterface`
 - `RuntimeInterface`, `HttpRuntimeInterface`, `CliRuntimeInterface`
 - `PlatformInterface`, `MobilePlatformInterface`, `DesktopPlatformInterface`
@@ -181,6 +185,20 @@ Important extension points include:
 - `ArrayableInterface`, `JsonableInterface`, `RenderableInterface`
 
 Applications should depend on contracts where substitution matters and avoid reaching into package internals.
+
+### Runtime scopes
+
+`ApplicationScopeInterface` is reserved for singleton services that live for the lifetime of the Kernel. `RequestScopeInterface` is created for one `handle()` call and is cleared even when execution fails. `PreviewSessionScopeInterface` may survive multiple interactions, but its `destroy()` method must be called when the preview session ends so registered resources are released.
+
+Request and preview state must not be stored in application singletons. Android lifecycle objects such as `Activity` and `Context` are not Kernel services; their adapters belong in `velt/native`.
+
+### Portable execution and recovery
+
+`ExecutionQueueInterface` defines scheduling, cancellation and expiration without assuming a thread or event loop. Each runtime supplies the concrete executor. `Application::fail()` closes the current Kernel instance and dispatches `runtime.rebuild.requested`; the host runtime must create a new instance when appropriate. The Kernel never restarts itself.
+
+### Extension contracts
+
+`ConfigRepositoryInterface`, `EventDispatcherInterface`, `CacheInterface`, `MigrationInterface` and `MigrationRunnerInterface` are platform-neutral extension points. Storage, Android integration and instrumentation remain outside this package.
 
 ## Testing and quality
 

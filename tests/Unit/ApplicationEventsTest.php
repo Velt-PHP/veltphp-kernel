@@ -6,6 +6,7 @@ namespace Velt\Kernel\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Velt\Kernel\Application;
+use Velt\Kernel\Contracts\RuntimeLifecycleEventsInterface;
 use Velt\Kernel\Tests\Fixtures\FakeServiceProvider;
 
 final class ApplicationEventsTest extends TestCase
@@ -51,6 +52,13 @@ final class ApplicationEventsTest extends TestCase
         );
 
         $app->events()->listen(
+            RuntimeLifecycleEventsInterface::READY,
+            function (mixed $payload, object|string $event) use (&$events): void {
+                $events[] = $event;
+            }
+        );
+
+        $app->events()->listen(
             'application.bootstrapped',
             function (mixed $payload, object|string $event) use (&$events): void {
                 $events[] = $event;
@@ -61,9 +69,10 @@ final class ApplicationEventsTest extends TestCase
 
         $this->assertSame(
             [
-                'application.bootstrapping',
-                'application.booted',
-                'application.bootstrapped',
+                RuntimeLifecycleEventsInterface::BOOTSTRAPPING,
+                RuntimeLifecycleEventsInterface::BOOTED,
+                RuntimeLifecycleEventsInterface::READY,
+                RuntimeLifecycleEventsInterface::BOOTSTRAPPED,
             ],
             $events
         );
