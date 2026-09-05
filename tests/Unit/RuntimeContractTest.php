@@ -30,6 +30,18 @@ final class RuntimeContractTest extends TestCase
 
         $this->assertMethodReturnType(
             RuntimeInterface::class,
+            'boot',
+            'void'
+        );
+
+        $this->assertMethodReturnType(
+            RuntimeInterface::class,
+            'ready',
+            'void'
+        );
+
+        $this->assertMethodReturnType(
+            RuntimeInterface::class,
             'bootstrap',
             'void'
         );
@@ -43,6 +55,12 @@ final class RuntimeContractTest extends TestCase
         $this->assertMethodReturnType(
             RuntimeInterface::class,
             'terminate',
+            'void'
+        );
+
+        $this->assertMethodReturnType(
+            RuntimeInterface::class,
+            'fail',
             'void'
         );
 
